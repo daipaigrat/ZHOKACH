@@ -1,0 +1,199 @@
+---
+title: "new_llm_analysis"
+format: html
+---
+
+```{r}
+library(rollama)
+library(tidyverse)
+```
+
+
+```{r}
+options(rollama_model = 'OxW/Saiga_YandexGPT_8B:q4_K_M', 
+        rollama_verbose = FALSE,
+        rollama_seed = 42
+)
+
+```
+
+```{r}
+# Чтение и подготовка данных
+#ПОМЕНЯТЬ ЧТЕНИЕ ДАННЫХ НА ВАШУ ТАБЛИЦУ, НО СОХРАНИТЬ ДОБАВЛЕНИЕ НОВЫХ СТОЛБЦОВ topic sentiment (предварительно нужно объеденить таблицы по ID мембера и отфильтровать на тип сообщения текст - 
+#примерный код ниже)
+
+
+data <- read_csv("processed_chat_data.csv",
+                 locale = locale(encoding = "UTF-8"),
+                 col_types = cols(
+                   message_id = col_character(),
+                   timestamp = col_datetime(),
+                   author_username = col_character(),
+                   text = col_character(),
+                   member_status = col_character(),
+                   ID = col_character())) %>% 
+        mutate(topic = NA_character_) %>% 
+        mutate(sentiment = NA_character_)
+
+```
+
+
+```{r}
+# Чтение и подготовка данных
+#ПОМЕНЯТЬ ЧТЕНИЕ ДАННЫХ НА ВАШУ ТАБЛИЦУ, НО СОХРАНИТЬ ДОБАВЛЕНИЕ НОВЫХ СТОЛБЦОВ topic sentiment (предварительно нужно объеденить таблицы по ID мембера и отфильтровать на тип сообщения текст - 
+#примерный код в processing_data, смотрите, чтобы совпадали названия столбцов)
+
+
+data <- read_csv("processed_chat_data.csv",
+                 locale = locale(encoding = "UTF-8"),
+                 col_types = cols(
+                  .default = col_character(),
+                  timestamp = col_datetime())) %>% 
+        mutate(topic = NA_character_) %>% 
+        mutate(sentiment = NA_character_)
+
+
+
+```
+
+
+### Тональность
+
+
+```{r}
+# Настройки
+max_attempts <- 5  # Максимальное количество попыток на один текст
+
+# Функция для извлечения категории
+extract_category_sent <- function(answer) {
+  # Ищем только первое точное совпадение
+  match <- str_extract(answer, "\\b(positive|neutral|negative)\\b")
+  
+  if (!is.na(match)) {
+    return(match)
+  } else {
+    return(NA_character_)
+  }
+}
+
+```
+
+```{r}
+# Основной цикл обработки
+
+for (i in 1:nrow(data)) {
+  chat_text <- data$text[i]
+  category <- NA_character_
+  attempt <- 1
+  
+  while (attempt <= max_attempts && is.na(category)) {
+    
+  tryCatch({
+      q_chat <- make_query(
+        text = chat_text,
+        prompt = "Is this text: 'positive', 'neutral', or 'negative'?",
+        system = "Answer in ONLY one word in English: positive, neutral или negative.")
+      
+      answer <- query(q_chat, output = 'text') %>% 
+        as.character() %>% 
+        str_remove_all("[[:punct:]]") %>% 
+        tolower()
+      
+      category <- extract_category_sent(answer)
+      
+    }, 
+    
+      error = function(e) {
+      message("Ошибка запроса: ", e$message)
+      return(NULL)
+        
+    })
+    
+    attempt <- attempt + 1
+  }
+
+  data$sentiment[i] <- ifelse(is.na(category), "neutral", category)
+  
+}
+```
+ 
+
+### Тема сообщения
+
+
+```{r}
+# Настройки
+max_attempts <- 3  # Максимальное количество попыток на один текст
+valid_categories <- c("образование и карьера, 
+                      отношения, 
+                      технологии и соцсети, 
+                      хобби и увлечения,
+                      поп-культура,
+                      планы на будущее,
+                      ментальное здоровье,
+                      социальные проблемы,
+                      путешествия и приключения,
+                      повседневность и юмор, 
+                      другое")
+
+
+extract_category_topic <- function(answer) {
+  
+  answer <- answer %>% 
+        as.character() %>% 
+        str_remove_all("[[:punct:]]") %>% 
+        tolower() %>%
+        str_squish()
+  
+  if (grepl(answer, valid_categories, ignore.case = TRUE)){
+      return(answer)
+    } 
+  else
+  {return(NA_character_)}
+}
+
+```
+
+```{r}
+# Основной цикл обработки
+for (i in 1:nrow(data)) {
+  chat_text <- data$text[i]
+  category <- NA_character_
+  attempt <- 1
+  
+  while (attempt <= max_attempts && is.na(category)) {
+    
+  tryCatch({
+      q_chat <- make_query(
+        text = chat_text,
+        prompt = paste("К какой из тем содержание сообщения больше подходит: ", valid_categories, sep = ''),
+        system = "Отвечай только названием ОДНОЙ категории. Пиши название категории также, как оно указано в списке ")
+      
+      llm_answer <- query(q_chat, output = 'text')
+      category <- extract_category_topic(llm_answer)
+      
+    }, 
+      
+      error = function(e) {
+      message("Ошибка запроса: ", e$message)
+      return(NULL)
+    })
+    
+    attempt <- attempt + 1
+  }
+  
+    # Сохраняем результат
+    data$topic[i] <- ifelse(is.na(category), "другое", category)
+ 
+}
+```
+
+```{r}
+data
+```
+
+
+```{r}
+write.csv(data, file = "analysis_data.csv", fileEncoding = "UTF-8", row.names = FALSE)
+```
+
