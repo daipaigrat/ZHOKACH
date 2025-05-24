@@ -25,8 +25,13 @@
 
 ## Как запустить?
 
-1.  Скачать скрипт main.r
-2.  Запустить его через Rstudio или с помощью команды:
+0.  Для работы требуется:
+    a) [JSON-ключ сервисного аккаунта Google Drive](https://console.cloud.google.com/)
+    б) [API ID и API Hash от Telegram](https://my.telegram.org/)
+    в) [ID папки на Google Drive](https://drive.google.com/drive/)
+1.  Скачать конфиг config_structure.ini и заполнить его данными из пункта 0
+2.  Скачать скрипт main.r
+3.  Запустить его через Rstudio или с помощью команды:
 
 <!-- -->
 
