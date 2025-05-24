@@ -1,0 +1,756 @@
+---
+title: "visual_test"
+format: html
+---
+
+```{r}
+library(shiny)
+library(tidyverse)
+library(scales)
+library(lubridate)
+library(plotly)
+library(DT)
+```
+```{r}
+source("to_drive.R")
+```
+
+```{r}
+data_test <- read_from_drive("analysis_data.csv", folder_id)
+```
+
+```{r}
+sentiment_colors <- c(
+  "positive" = "#4CAF50",
+  "neutral" = "#FFC107", 
+  "negative" = "#F44336", 
+  "unknown" = "#808080"
+)
+```
+
+
+#Для временной агрегации
+```{r}
+time_aggregate <- function(df, time_unit = c("day", "week", "month")) 
+  {
+    unit <- match.arg(time_unit)
+    df %>%
+        mutate(date = floor_date(as.Date(timestamp), unit)) %>%
+      #правильное объединение временных меток в заданные интервалы для последующего подсчёта количества сообщений в каждом периоде
+        count(date, name = "total")
+}
+
+```
+
+
+#Для создания топ-пользователей
+```{r}
+get_top_users <- function(df, var, n = 10) {
+  df %>%
+    group_by(author_username) %>%
+    summarise(total = sum({{var}}), .groups = "drop") %>%
+    slice_max(order_by = total, n = n) %>%  
+    arrange(desc(total))
+}
+```
+
+
+# Для тепловых карт
+```{r}
+create_heatmap <- function(df, title, palette) {
+  
+  heatmap_data <- df %>%
+    mutate(
+      date = as.Date(timestamp),          
+      hour = hour(timestamp),   
+      y_axis = format(date, "%d %b")     
+    ) 
+  
+  #Проверяем уникальные даты
+  unique_dates <- unique(heatmap_data$date) %>% sort(decreasing = TRUE)
+  date_levels <- format(unique_dates, "%d %b")
+  
+  #Явное задание порядка
+  heatmap_data <- heatmap_data %>%
+    mutate(
+      y_axis = factor(y_axis, levels = date_levels) 
+    )
+  
+  #Группировка и агрегация
+  heatmap_data <- heatmap_data %>%
+    group_by(y_axis, hour) %>%
+    summarise(
+      message_count = n(),
+      .groups = "drop"
+    )
+  
+  #Визуализация
+  ggplot(heatmap_data, aes(x = hour, y = y_axis, fill = message_count)) +
+    geom_tile(color = "white", linewidth = 0.4) +
+    scale_fill_gradientn(colors = palette) +
+    scale_x_continuous(
+      breaks = seq(0, 23, by = 1),
+      labels = seq(0, 23, by = 1)
+    ) +
+    labs(
+      title = title,
+      x = "Час дня",
+      y = "Дата"
+    ) +
+    theme_minimal() +
+    theme(
+      panel.grid = element_blank(),
+      axis.text.x = element_text(angle = 0, vjust = 0.5)
+    )
+}
+```
+
+## Загрузка данных
+```{r}
+#data <- read_csv("analysis_data.csv",
+#    locale = locale(encoding = "UTF-8"),             
+#    col_types = cols(
+#    .default = col_character(),
+#        timestamp = col_datetime(),
+#        dialog_id = col_integer()
+#    ))
+data <- read_from_drive("analysis_data.csv", folder_id)
+```
+
+
+## Подготовка данных для визуализации
+```{r}
+sentiment_summary <- data %>%
+    count(dialog_id, 
+         sentiment, 
+         name = "count") %>%
+    group_by(dialog_id) %>%
+    mutate(
+      total = sum(count), 
+      percent = count/total)
+```
+
+```{r}
+user_sentiment <- data %>%
+    count(author_username, 
+          sentiment, 
+          name = "count") %>%
+    group_by(author_username) %>%
+    mutate(
+      total_messages = sum(count), 
+      percent = count/total_messages)
+```
+
+## Статистика сообщений
+```{r}
+daily_messages <- time_aggregate(data, "day")
+weekly_messages <- time_aggregate(data, "week")
+monthly_messages <- time_aggregate(data, "month")
+overall_messages <- data %>% filter(!is.na(text)) %>% nrow()
+```
+
+```{r}
+
+```
+
+
+```{r}
+daily_stats <- data %>% 
+  mutate(date = as_date(timestamp)) %>%
+  count(date, sentiment) %>%
+  complete(date, sentiment, fill = list(n = 0)) %>%
+  group_by(date) %>%
+  mutate(total = sum(n)) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0)
+```
+
+
+#Метрики по пользователям
+
+## Топ самых активных пользователей 
+```{r}
+data_length <- data %>%
+  mutate(message_length = nchar(text)) %>%  
+  filter(!is.na(text)) 
+
+
+top_users <- data %>%
+  count(author_username) %>%
+  slice_max(order_by = n, n = 10) %>%
+  select(author_username)
+
+user_metrics <- data_length %>%
+  group_by(author_username) %>%
+  summarise(
+    total_messages = n(),
+    total_length = sum(message_length),
+    avg_length = mean(message_length)
+  ) %>%
+  left_join(top_users, by = "author_username", copy = TRUE)
+```
+
+
+## DAU/WAU/MAU
+```{r}
+active_users <- list(
+    dau = data %>%
+        mutate(date = as.Date(timestamp)) %>%
+        group_by(date) %>%
+        summarise(dau = n_distinct(author_username)),
+    
+    wau = data %>%
+        mutate(week = floor_date(as.Date(timestamp), "week")) %>%
+        group_by(week) %>%
+        summarise(wau = n_distinct(author_username)),
+    
+    mau = data %>%
+        mutate(month = floor_date(as.Date(timestamp), "month")) %>%
+        group_by(month) %>%
+        summarise(mau = n_distinct(author_username))
+)
+```
+
+
+```{r}
+top_users_data <- user_sentiment %>% 
+  filter(author_username %in% top_users) %>% 
+  mutate(
+    author_username = fct_reorder(author_username, -total_messages)
+    #позволяет изменить порядок категорий (уровней) в факторной переменной на основе порядка значений в другой переменной
+  )
+```
+
+# Активность по часам (за все время)
+
+```{r}
+hourly_data <- data %>%
+  mutate(
+    hour = hour(timestamp)  # Извлекаем час 
+  ) %>%
+  group_by(hour) %>%
+  summarise(
+    messages = n(),
+    .groups = "drop",
+  ) %>% 
+  mutate(percent = round((messages/sum(messages))*100,2)) #Отображение в процентах
+```
+
+```{r}
+# Подсчет общей активности по часам
+hourly_data <- data %>%
+  mutate(hour = hour(timestamp)) %>%
+  group_by(hour) %>%
+  summarise(messages = n()) %>% 
+  mutate(percent = round((messages/sum(messages))*100, 2))
+
+# Подсчет общего количества сообщений по часам
+total_messages_hourly <- hourly_data %>% 
+  select(hour, total = messages)
+
+# Подсчет негативных сообщений и их доли
+hourly_data_neg <- data %>%
+  filter(sentiment == "negative") %>%
+  mutate(hour = hour(timestamp)) %>%
+  group_by(hour) %>%
+  summarise(negative_messages = n()) %>%
+  left_join(total_messages_hourly, by = "hour") %>%
+  mutate(
+    negative_ratio = ifelse(is.na(negative_messages), 0, round((negative_messages/total)*100, 2))
+  ) %>%
+  select(hour, negative_ratio)
+
+# Объединение данных и замена NA на 0
+combined_data <- hourly_data %>% 
+  left_join(hourly_data_neg, by = "hour") %>% 
+  mutate(negative_ratio = coalesce(negative_ratio, 0)) %>% 
+  select(hour, percent, negative_ratio)
+```
+
+
+```{r}
+combined_long <- combined_data %>%
+  pivot_longer(
+    cols = c(percent, negative_ratio),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  mutate(
+    metric = factor(
+      metric, 
+      levels = c("percent", "negative_ratio"), 
+      labels = c("Все сообщения", "Негативные") 
+    )
+  )
+```
+
+## Тональность по пользователям
+```{r}
+top_users_data <- user_sentiment %>% 
+  filter(author_username %in% top_users) %>% 
+  mutate(
+    author_username = fct_reorder(author_username, -total_messages)
+  )
+
+top_users_name <- top_users %>% 
+  pull(author_username)
+```
+
+
+```{r}
+prepare_sentiment_data <- function(df) {
+  df %>%
+    mutate(
+      date = as.Date(date),  # Преобразуем в дату
+      sentiment = factor(sentiment, levels = c("negative", "neutral", "positive", "unknown"))
+    ) %>%
+    count(date, sentiment, name = "count") %>%
+    complete(date = seq(min(date), max(date), by = "day"), 
+             sentiment, 
+             fill = list(count = 0))
+}
+```
+
+
+```{r}
+pie_cat <- function(df){
+  topic_distribution <- df %>% 
+    count(topic, name = "count") %>% 
+    mutate(
+      percentage = count / sum(count) * 100,
+      label = ifelse(percentage >= 3, sprintf("%.1f%%", percentage), "")  # Скрываем маленькие проценты
+    )
+  
+  # Создаем круговую диаграмму
+  ggplot(topic_distribution, aes(x = "", y = percentage, fill = topic)) +
+    geom_bar(stat = "identity", width = 1, color = "white") +
+    coord_polar("y", start = 0) +
+    geom_text(aes(label = label),
+              position = position_stack(vjust = 0.5),
+              size = 3.5,
+              color = "black") +
+    scale_fill_brewer(palette = "Set3", name = "Темы", 
+                      guide = guide_legend(reverse = FALSE)) +
+    theme_void() +
+    theme(legend.position = "right",
+          plot.title = element_text(hjust = 0.5)) +
+    labs(title = "Распределение тем по категориям")
+}
+```
+
+```{r}
+pie_cat(data)
+```
+
+
+```{r}
+plot_sentiment <- function(df) {
+  df %>%
+    pivot_longer(
+      c(positive, 
+        neutral, 
+        negative,
+        unknown), 
+      names_to = "sentiment") %>%
+    ggplot(aes(date, value)) +
+    geom_area(aes(fill = sentiment), alpha = 0.6) +
+    geom_line(
+      aes(y = total, 
+          color = "Всего сообщений"), 
+      linewidth = 1.2) +
+    scale_fill_manual(
+      values = sentiment_colors) +
+    scale_color_manual(values = c("Всего сообщений" = "steelblue"))
+}
+```
+
+
+```{r}
+date_sentiment <- function(){
+  ggplot(combined_long, aes(x = hour, y = value, fill = metric)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(
+    values = c("#2196F3", "#F44336"), 
+    name = NULL
+  ) +
+  scale_x_continuous(
+    breaks = seq(0, 23, by = 1),
+    labels = seq(0, 23, by = 1),
+  ) +
+  labs(
+    title = FALSE,
+    x = "Часы",
+    y = "Процент"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top"
+  )
+}
+```
+
+
+```{r}
+activity_hours <- function(df){
+  df %>%
+  filter(!is.na(timestamp)) %>%      
+  create_heatmap(
+    title = FALSE, 
+    palette = c("#f7fbff", "#08306b")
+  )
+}
+```
+
+
+```{r}
+distrib_sent <- function(){
+  ggplot(user_sentiment %>% 
+           filter(author_username %in% top_users_name), 
+         aes(x = reorder(author_username, -total_messages), y = percent, fill = sentiment)) +
+    geom_col(position = "stack") +
+    geom_text(
+      aes(label = ifelse(percent > 0.15, percent(percent, accuracy = 1), "")),
+      position = position_stack(vjust = 0.5),
+      color = "white",
+      size = 3
+    ) +
+    scale_fill_manual(
+      values = sentiment_colors,
+      na.value = "grey50"
+    ) +
+    scale_y_continuous(labels = percent_format()) +
+    labs(
+      #title = FALSE,
+      x = "Пользователь",
+      y = "Доля сообщений",
+      fill = "Тональность"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text( hjust = 0.5, size = 9),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+      legend.position = "bottom"
+    )
+}
+```
+
+
+```{r}
+plot_distr <- function(df){
+  df %>%
+    pivot_longer(
+      c(positive, 
+        neutral, 
+        negative,
+        unknown), 
+      names_to = "sentiment") %>%
+    ggplot(aes(date, value)) +
+    geom_area(aes(fill = sentiment), alpha = 0.6) +
+    geom_line(
+      aes(y = total, 
+          color = "Всего сообщений"), 
+      linewidth = 1.2) +
+    scale_fill_manual(
+      values = sentiment_colors) +
+    scale_color_manual(values = c("Всего сообщений" = "steelblue"))
+}
+```
+
+```{r}
+count_mes <- function(){
+  ggplot(user_sentiment %>% 
+           filter(author_username %in% top_users_name), 
+         aes(x = reorder(author_username, -total_messages), y = count, fill = sentiment)) +
+    geom_col(position = "dodge") +
+    geom_text(
+      aes(label = count),
+      position = position_dodge(width = 0.9),
+      vjust = -0.5,
+      size = 3
+    ) +
+    scale_fill_manual(
+      values = sentiment_colors
+    ) +
+    labs(
+      #title = FALSE,
+      x = "Пользователь",
+      y = "Количество сообщений"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(hjust = 0.5, face = "bold")
+    )
+}
+```
+
+```{r}
+prepare_topic_stats <- function(df) {
+  df %>%
+    count(topic, name = "count") %>%
+    mutate(
+      percentage = round(count / sum(count) * 100, 1),
+      label = paste0(count, " (", percentage, "%)")
+    ) %>%
+    arrange(desc(count))
+}
+```
+
+
+```{r}
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      .content-box {
+        border: 1px solid #e0e0e0;
+        border-radius: 5px;
+        padding: 15px;
+        margin-bottom: 20px;
+        background-color: #ffffff;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        height: 100%;
+      }
+      .info-panel {
+        background-color: #f8f9fa;
+        padding: 15px;
+        margin-bottom: 20px;
+        border-radius: 5px;
+      }
+      body {
+        background-color: #f5f5f5;
+      }
+      .scrollable-table {
+        height: 300px;
+        overflow-y: auto;
+      }
+    "))
+  ),
+  
+  titlePanel("Анализ сообщений"),
+  
+  # Информационная панель сверху
+  fluidRow(
+    column(
+      width = 12,
+      div(class = "info-panel",
+          fluidRow(
+            column(3, 
+                   div(style = "text-align: center;",
+                       h4("Участников в чате"),
+                       h3(textOutput("total_users"), style = "margin-top: 10px;"))
+            ),
+            column(3,
+                   div(style = "text-align: center;",
+                       h4("Активных участников"),
+                       h3(textOutput("act_user"), style = "margin-top: 10px;"))
+            ),
+            column(3,
+                   div(style = "text-align: center;",
+                       h4("Всего сообщений"),
+                       h3(textOutput("total_messages"), style = "margin-top: 10px;"))
+            ),
+            column(3,
+                   div(style = "text-align: center;",
+                       h4("Чат существует дней"),
+                       h3(textOutput("chat_age"), style = "margin-top: 10px;"))
+            )
+        )
+      )
+    )
+  ),
+  
+  # Первая строка
+  fluidRow(
+    column(
+      width = 4,
+      div(class = "content-box",
+          h3("Активность по часам"),
+          plotlyOutput("activity_plot", height = "300px")
+      )
+    ),
+    column(
+      width = 3,
+      div(class = "content-box",
+          h3("Статистика участников"),
+          div(class = "scrollable-table",
+              DTOutput("stat_table"))
+      )
+    ),
+    column(
+      width = 5,
+      div(class = "content-box",
+          h3("Основные темы"),
+          div(class = "scrollable-table",
+              DTOutput("cat_table"))
+      )
+    )
+  ),
+  
+  # Вторая строка
+  fluidRow(
+    column(
+      width = 6,
+      div(class = "content-box",
+          h3("Тональность по датам"),
+          plotlyOutput("distr_plot", height = "300px")
+      )
+    ),
+    column(
+      width = 6,
+      div(class = "content-box",
+          h3("Тональность по времени"),
+          plotlyOutput("sentiment_date", height = "300px")
+      )
+    )
+  ),
+  
+  # Третья строка
+  fluidRow(
+    column(
+      width = 6,
+      div(class = "content-box",
+          h3("Распределение тональности по пользователям"),
+          plotlyOutput("distribution_sent", height = "380px")
+      )
+    ),
+    column(
+      width = 6,
+      div(class = "content-box",
+          h3("Количество сообщений по тональности"),
+          plotlyOutput("mes_count", height = "380px")
+      )
+    )
+  )
+)
+```
+
+
+```{r}
+server <- function(input, output) {
+  total_users <- length(unique(data$author_username))
+  active_user <- length(unique(data$author_username))
+  active_percent <- round(active_user / total_users * 100, 1)
+  active_users = paste0(active_user, " (", active_percent, "%)")
+  
+  output$total_users <- renderText({ total_users })
+  output$act_user <- renderText({ active_users })
+  output$total_messages <- renderText({ nrow(data) })
+  
+  date1 <- as.Date(min(data$timestamp))  
+  date2 <- Sys.Date()  
+  days_diff <- difftime(date2, date1, units = "days")  
+  output$chat_age <- renderText(as.numeric(days_diff))
+  
+  output$sentiment_plot <- renderPlotly({
+    ggplotly(plot_sentiment(daily_stats))
+  })
+  
+  output$activity_plot <- renderPlotly({
+    ggplotly(activity_hours(data))
+  })
+  
+  output$sentiment_date <- renderPlotly({
+    ggplotly(date_sentiment())
+  })
+  
+  output$distribution_sent <- renderPlotly({
+    ggplotly(distrib_sent())
+  })
+  
+  output$mes_count <- renderPlotly({
+    ggplotly(count_mes())
+  })
+
+  output$distr_plot <- renderPlotly({
+    ggplotly(plot_distr(daily_stats))
+  })
+  
+  output$stat_table <- DT::renderDataTable({
+    table_data <- user_metrics[, c(1, 2, 4)]
+    colnames(table_data) <- c("Пользователь", "Количество сообщений", "Средняя длина")
+    
+    DT::datatable(
+      table_data,
+      options = list(
+        scrollX = TRUE,
+        pageLength = 10,
+        lengthChange = FALSE,  # Отключаем выбор количества строк
+        dom = 't',
+        language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Russian.json')
+      ),
+      rownames = FALSE
+    )
+  })
+  
+  output$cat_table <- renderDT({
+    stats <- prepare_topic_stats(data)
+    
+    datatable(
+      stats %>% 
+        select(
+          "Тема" = topic, 
+          "Количество сообщений" = count, 
+          "Доля, %" = percentage
+        ),
+      rownames = FALSE,
+      extensions = c('Scroller'),  # Добавляем расширение для плавной прокрутки
+      options = list(
+        deferRender = TRUE,
+        scrollY = 400,            # Фиксированная высота области прокрутки
+        scroller = TRUE,
+        scrollX = TRUE,           # Горизонтальная прокрутка при необходимости
+        pageLength = nrow(stats), # Показываем все строки (все категории)
+        lengthChange = FALSE,     # Отключаем выбор количества строк
+        dom = 't',               # Отключаем пагинацию и другие элементы управления
+        language = list(
+          url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Russian.json',
+          decimal = ",",
+          thousands = " "
+        ),
+        columnDefs = list(
+          list(className = 'dt-center', targets = 1:2),
+          list(width = '40%', targets = 0),
+          list(width = '30%', targets = 1),
+          list(width = '30%', targets = 2)
+        )
+      ),
+      class = "display nowrap",
+    ) %>%
+      formatStyle(
+        'Доля, %',
+        background = styleColorBar(c(0, max(stats$percentage)), 'lightblue'),
+        backgroundSize = '98% 88%',
+        backgroundRepeat = 'no-repeat',
+        backgroundPosition = 'center'
+      ) %>%
+      formatRound('Доля, %', digits = 1) %>%
+      formatCurrency('Количество сообщений', currency = "", digits = 0, mark = " ")
+  })
+}
+```
+
+
+```{r}
+output$active <- renderPlotly({
+    activity_data <- prepare_activity_data(data, input$time_unit)
+    
+    plot_ly(activity_data, x = ~time, y = ~message_count, 
+            type = 'scatter', mode = 'lines', 
+            fill = 'tozeroy', fillcolor = 'rgba(100, 149, 237, 0.4)',
+            line = list(color = 'rgb(100, 149, 237)'),
+            hoverinfo = 'text',
+            text = ~paste0("Дата: ", format(time, "%Y-%m-%d %H:%M"), 
+                          "<br>Сообщений: ", message_count)) %>%
+      layout(
+        title = "Активность в чате",
+        xaxis = list(title = "Время"),
+        yaxis = list(title = "Количество сообщений"),
+        hovermode = "x unified",
+        margin = list(t = 50)
+      ) %>%
+      config(displayModeBar = FALSE)
+  })
+```
+
+```{r}
+shinyApp(ui, server)
+```
