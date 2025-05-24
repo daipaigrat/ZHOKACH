@@ -21,7 +21,7 @@
 
 <!-- -->
 
-    install.packages("ini", "jsonlite", "dplyr","stringr", "readr", "reticulate","googledrive","shiny"."googlesheets4","jsonlite","lubridate")
+    install.packages(c("shiny", "ini", "reticulate", "jsonlite", "dplyr", "stringr", "readr", "googledrive", "googlesheets4", "lubridate", "tidyr"))
 
 ## Как запустить?
 
@@ -35,7 +35,7 @@
 
 <!-- -->
 
-    R CMD BATCH main.r
+    shiny::runApp("main.R")
     
 ## Пользовательский опыт
 После запуска скрипта откроется форма заполнения параметров для инициализации работы. Пользователь вносит их в ручном режиме, смотря какая группа ему нужна.
