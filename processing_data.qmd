@@ -1,0 +1,149 @@
+---
+title: "processing_data"
+format: 
+  md:
+     output-file: README.md
+---
+
+
+
+## Установка необходимых пакетов
+
+```{r}
+#install.packages(c("dplyr", "lubridate", "stringr", "tidyr", "readr"))
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(tidyr)
+library(readr)
+```
+
+
+## 1. Обработка таблицы участников (members) 
+
+```{r}
+process_members <- function(members_path) {
+  members <- read_delim(
+    members_path,
+    delim = ";",
+    col_types = cols(
+      ID = col_character(),
+      Имя = col_character(),
+      Username = col_character(),
+      Телефон = col_character(),
+      Статус = col_character()),
+    locale = locale(encoding = "UTF-8")
+  ) %>%
+    rename(
+      member_status = `Статус`
+    ) %>% 
+  select(-Имя, -Телефон)
+  return(members)
+}
+
+```
+
+
+## 2. Обработка таблицы сообщений (chat_data) 
+
+```{r}
+process_chat_data <- function(chat_path) {
+  chat <- read_delim(
+    chat_path,
+    delim = ";",
+    col_types = cols(
+      ID = col_character(),
+      Дата = col_datetime(format = "%d.%m.%Y %H:%M"),
+      ID_Автор = col_character(),
+      Автор = col_character(),
+      Тип = col_character(),
+      Текст = col_character()
+    ),
+    locale = locale(encoding = "UTF-8")
+  ) %>%
+    # Очистка данных
+    mutate(
+      # Очистка текста (сохраняем эмодзи и пунктуацию)
+      Текст = str_remove_all(Текст, "[\\x00-\\x1F]"), # Удаляем управляющие символы
+      Текст = str_squish(Текст) # Удаляем лишние пробелы
+    ) %>%
+    # Отбор только текстовых сообщений
+    filter(Тип == "Текст" & !is.na(Текст)) %>%
+    # Переименование колонок
+    rename(
+      message_id = ID,
+      timestamp = Дата,
+      id_author = ID_Автор,
+      author_username = Автор,
+      text = Текст
+    ) %>%
+    select(-Тип) # Удаляем ненужные колонки
+  
+  return(chat)
+}
+```
+
+
+## 3. Объединение таблиц и финальная обработка 
+
+```{r}
+preprocess_data <- function(members_path, chat_path) {
+  # Загрузка данных
+  members <- process_members(members_path)
+  chat <- process_chat_data(chat_path)
+  
+  # Объединение данных
+  combined_data <- chat %>%
+    left_join(members, by = c("author_username" = "Username")) %>%
+    #Учитываем только реальных пользователей, т.к. есть системные сообщения от бота
+    filter((grepl("@", author_username))) %>% 
+    # Упорядочивание колонок
+    select(
+      message_id,
+      timestamp,
+      author_username,
+      author_name,
+      text,
+      member_status,
+      everything()
+    )
+  
+  
+  return(combined_data)
+}
+
+
+```
+
+
+## Пути к файлам
+
+```{r}
+members_path <- "members_improved.csv"
+chat_path <- "chats_improved.csv"
+```
+
+```{r}
+member <- process_members(members_path)
+member
+```
+
+## Обработка данных
+
+```{r}
+processed_data <- preprocess_data(members_path, chat_path)
+```
+
+## Просмотр результата
+
+```{r}
+processed_data
+```
+
+
+## Сохранение результата
+
+```{r}
+write.csv(processed_data, file = "processed_chat_data.csv", fileEncoding = "UTF-8", row.names = FALSE)
+```
+
