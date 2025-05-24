@@ -1,0 +1,197 @@
+---
+title: "test_huggin_face"
+format: 
+  md:
+     output-file: README.md
+---
+
+## Установка пакетов 
+
+```{r}
+#install.packages(c("dplyr", "httr", "jsonlite", "lubridate", "readr"))
+
+library(dplyr)
+library(httr)
+library(jsonlite)
+library(lubridate)
+library(readr)
+library(ggplot2)
+library(scales)
+```
+
+
+## 1. Загрузка и предобработка данных
+
+```{r}
+data <- read_csv("processed_chat_data.csv",
+    locale = locale(encoding = "UTF-8"),             
+    col_types = cols(
+    message_id = col_character(),  
+    timestamp = col_datetime(),    
+    author_username = col_character(),
+    author_name = col_character(),
+    text = col_character(),
+    member_status = col_character(),
+    ID = col_character())) %>% 
+  arrange(timestamp) %>%  # Сортировка всех сообщений по времени
+  mutate(
+    time_diff = difftime(timestamp, lag(timestamp), 
+    units = "hours")
+  )
+```
+
+
+## 2. Группировка в диалоги (любые сообщения с разрывом >12 часов) 
+
+```{r}
+dialog_data <- data %>%
+  mutate(
+    # Определяем разрыв между текущим и предыдущим сообщением
+    time_diff = replace_na(time_diff, as.difftime(0, units = "hours")),  # Первое сообщение получает разницу 0
+    new_dialog = time_diff > 12,
+    dialog_id = cumsum(new_dialog)
+  ) %>% 
+  select(-new_dialog, -time_diff)
+```
+
+
+```{r}
+dialog_data
+```
+
+## 3. Функция суммаризации через Hugging Face API 
+
+```{r}
+api_key <- readLines("api_key")
+```
+
+
+
+```{r}
+summarization <- function(text) 
+  {
+  
+  api_url <- "https://api-inference.huggingface.co/models/IlyaGusev/rubert_telegram_headlines"
+  headers <- add_headers(
+    "Authorization" = paste("Bearer", api_key), 
+    "Content-Type" = "application/json")
+  
+  request_body <- jsonlite::toJSON(list(inputs = text), auto_unbox = TRUE)
+  
+  response <- POST(
+    url = api_url,
+    headers,
+    body = request_body,
+    encode = "json"
+  )
+  
+  
+  if (httr::status_code(response) == 200) {
+    content <- jsonlite::fromJSON(httr::content(response, "text"))
+    return(content[[1]]$summary_text)
+  } else {
+    message("Ошибка API: ", httr::content(response, "text"))
+    return(NA_character_)
+  }
+  
+  Sys.sleep(1)
+}
+```
+
+```{r}
+summarize_dialog <- function(messages) {
+  dialog_text <- paste(messages, collapse = " \n ")
+  
+  if (nchar(dialog_text) < 100) return(dialog_text)
+  
+  summary <- summarization(dialog_text)
+  
+  ifelse(is.na(summary), dialog_text, summary)
+}
+```
+
+```{r}
+dialog <- dialog_data %>% 
+  filter(dialog_id == 1) %>% select(text)
+dialog_text <- paste(dialog, collapse = " \n ")
+summary <- summarization(dialog_text)
+summary
+```
+
+```{r}
+dialog_summaries <- dialog_data %>%
+  group_by(dialog_id) %>%
+  summarise(
+    message_count = n(),
+    result = list(summarize_dialog(text))  # Возвращаем список
+  ) %>%
+  mutate(
+    summary = map_chr(result, ~.x$summary),
+    status = map_chr(result, ~.x$status)
+  ) %>%
+  select(-result) %>%
+  ungroup()
+```
+
+
+## 3. Функция анализа тональности через Hugging Face API 
+
+```{r}
+api_key <- readLines("api_key")
+```
+
+
+
+```{r}
+analyze_sentiment <- function(text) 
+  {
+  
+  api_url <- "https://api-inference.huggingface.co/models/blanchefort/rubert-base-cased-sentiment"
+  headers <- add_headers(
+    "Authorization" = paste("Bearer", api_key), 
+    "Content-Type" = "application/json")
+  
+  response <- POST(
+    url = api_url,
+    headers,
+    body = toJSON(list(inputs = text), auto_unbox = TRUE),
+    encode = "json")
+  
+  
+  if (status_code(response) == 200) {
+    content <- fromJSON(content(response, "text"))
+    return(content[[1]]$label[1])
+  } else {
+    return(NA_character_)
+  }
+  Sys.sleep(1) # Задержка для избежания лимита API
+}
+```
+
+
+
+# 4. Обработка сообщений и сохранение результатов
+```{r}
+results <- dialog_data %>%
+  mutate(
+    sentiment = sapply(text, function(x) {
+      tryCatch(analyze_sentiment(x),
+               error = function(e) NA_character_)
+    })
+  )
+```
+
+
+```{r}
+results
+```
+
+
+
+## 5. Сохранение результатов 
+
+```{r}
+write_csv(results, "sent_analysis_rubert.csv")
+```
+
+
